@@ -1,9 +1,49 @@
 --[[
-    Project Zero - Redz GUI, tabs only (step 1)
-    Loads the Redz UI (embedded below, from your Redz_Hub_Gui.txt) and creates
-    the 12 tabs. No features yet. Problems print to the console (F9) as
-    "[Project Zero GUI]".
+    Project Zero - Redz GUI preview (step 2: modern look + placeholder controls)
+
+    What is in this build
+      * Modern look: deep-navy glass theme, neon gradient outline, accent line.
+      * Placeholder controls (toggles, sliders, dropdowns, buttons, text boxes) on
+        every tab, laid out like the original hub. They do nothing yet.
+      * Visible resize grip in the window's bottom-right corner (drag it), plus
+        Settings > Window sliders for width, height and UI scale.
+      * Logo in the title bar, optional floating logo button (shows / hides the window).
+      * Tab icons.
+    Problems print to the console (F9) as "[Project Zero GUI]".
+
+    IMAGES - three ways to give the GUI a picture (use whichever you like):
+      1) Roblox asset id : "rbxassetid://123456789" or just 123456789
+      2) A file          : "logo.png" -> workspace/ProjectZero/logo.png
+      3) A direct link   : "https://.../logo.png" (downloaded once, then cached)
+    Or skip the settings below: files named logo.png / icons/<Tab name>.png inside
+    workspace/ProjectZero are picked up automatically.
 ]]
+
+local CONFIG = {
+    Title = "Project Zero",
+    SubTitle = "Blox Fruit",
+    Folder = "ProjectZero", -- executor workspace folder for settings and images
+
+    Logo = "",              -- title-bar logo (also used on the floating button)
+    FloatingButton = true,  -- small draggable logo button that shows / hides the window
+    AnimatedBorder = true,  -- slowly turning neon outline around the window
+    AutoImageFiles = true,  -- also look for ProjectZero/logo.png and ProjectZero/icons/<Tab>.png
+
+    TabIcons = {            -- same three formats as Logo; leave "" for no icon
+        ["Home"] = "",
+        ["Sub Farm"] = "",
+        ["Sea Event"] = "",
+        ["Player"] = "",
+        ["Dragon Update"] = "",
+        ["Dungeon"] = "",
+        ["Trials"] = "",
+        ["Travel"] = "",
+        ["Shop"] = "",
+        ["Misc"] = "",
+        ["Webhook"] = "",
+        ["Settings"] = "",
+    },
+}
 
 local TABS = {
     "Home",
@@ -19,6 +59,8 @@ local TABS = {
     "Webhook",
     "Settings",
 }
+
+local DEFAULT_WIDTH, DEFAULT_HEIGHT = 550, 380 -- Redz default window size
 
 local env = (getgenv and getgenv()) or _G
 
@@ -4051,11 +4093,670 @@ end
 return s
 ]===]
 
+------------------------------------------------------------------------
+-- helpers
+------------------------------------------------------------------------
+local HttpService = game:GetService("HttpService")
+
 local function log(message)
     warn("[Project Zero GUI] " .. tostring(message))
 end
 
--- 1. Remove a copy from an earlier run so the window is not created twice.
+local FOLDER = CONFIG.Folder
+local canFS = type(isfile) == "function" and type(readfile) == "function" and type(writefile) == "function"
+local canFolders = type(isfolder) == "function" and type(makefolder) == "function"
+local getAsset = getcustomasset or getsynasset
+
+local function ensureFolder(path)
+    if canFolders then
+        pcall(function()
+            if not isfolder(path) then
+                makefolder(path)
+            end
+        end)
+    end
+end
+
+local function hashString(text)
+    local h = 5381
+    for i = 1, #text do
+        h = (h * 33 + text:byte(i)) % 4294967296
+    end
+    return string.format("%08x", h)
+end
+
+-- PNG and JPEG are the only formats Roblox image labels accept from files.
+local function sniffImage(bytes)
+    if type(bytes) ~= "string" or #bytes < 8 then
+        return nil
+    end
+    if bytes:sub(1, 8) == "\137PNG\r\n\26\n" then
+        return ".png"
+    end
+    if bytes:sub(1, 3) == "\255\216\255" then
+        return ".jpg"
+    end
+    return nil
+end
+
+------------------------------------------------------------------------
+-- images: asset id / file in workspace / direct link
+------------------------------------------------------------------------
+local function fileToAsset(path)
+    if not (getAsset and canFS) then
+        return nil, "this executor has no getcustomasset, so file images cannot be shown (use a Roblox asset id instead)"
+    end
+    local okFile, exists = pcall(isfile, path)
+    if not okFile or not exists then
+        return nil, "file not found: " .. path
+    end
+    local ok, url = pcall(getAsset, path)
+    if ok and type(url) == "string" and url ~= "" then
+        return url
+    end
+    return nil, "getcustomasset failed for " .. path
+end
+
+-- Returns image, isNativeAssetId  -or-  nil, reason
+local function resolveImage(spec)
+    spec = tostring(spec or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if spec == "" then
+        return nil
+    end
+
+    local id = spec:match("^rbxassetid://(%d+)$") or spec:match("^(%d+)$")
+    if id then
+        return "rbxassetid://" .. id, true
+    end
+
+    if spec:match("^https?://") then
+        if not (getAsset and canFS) then
+            return nil, "links need getcustomasset and file functions; this executor lacks them"
+        end
+        ensureFolder(FOLDER)
+        ensureFolder(FOLDER .. "/cache")
+        local base = FOLDER .. "/cache/" .. hashString(spec)
+        for _, ext in ipairs({ ".png", ".jpg" }) do
+            local okFile, exists = pcall(isfile, base .. ext)
+            if okFile and exists then
+                return fileToAsset(base .. ext)
+            end
+        end
+        local okGet, body = pcall(game.HttpGet, game, spec)
+        if not okGet then
+            return nil, "download failed: " .. tostring(body)
+        end
+        local ext = sniffImage(body)
+        if not ext then
+            return nil, "that link is not a direct PNG/JPG image (a normal web page was returned)"
+        end
+        local okWrite, writeError = pcall(writefile, base .. ext, body)
+        if not okWrite then
+            return nil, "could not save the image: " .. tostring(writeError)
+        end
+        return fileToAsset(base .. ext)
+    end
+
+    if spec:match("^rbxasset://") then
+        return spec
+    end
+
+    local path = spec
+    local okFile, exists = pcall(function()
+        return canFS and isfile(path)
+    end)
+    if not (okFile and exists) then
+        path = FOLDER .. "/" .. spec
+    end
+    return fileToAsset(path)
+end
+
+local function findFile(base)
+    if not canFS then
+        return nil
+    end
+    for _, ext in ipairs({ ".png", ".jpg", ".jpeg" }) do
+        local ok, exists = pcall(isfile, base .. ext)
+        if ok and exists then
+            return base .. ext
+        end
+    end
+    return nil
+end
+
+local imageNotes = {} -- shown in Settings > Images
+
+local function note(text)
+    imageNotes[#imageNotes + 1] = text
+end
+
+local function resolveLogo()
+    if CONFIG.Logo ~= "" then
+        local image, native = resolveImage(CONFIG.Logo)
+        if not image then
+            note("Logo: " .. tostring(native))
+        end
+        return image
+    end
+    if CONFIG.AutoImageFiles then
+        local path = findFile(FOLDER .. "/logo")
+        if path then
+            local image, reason = fileToAsset(path)
+            if not image then
+                note("Logo: " .. tostring(reason))
+            end
+            return image
+        end
+    end
+    return nil
+end
+
+local function resolveTabIcon(name)
+    local spec = CONFIG.TabIcons[name] or ""
+    if spec ~= "" then
+        local image, native = resolveImage(spec)
+        if not image then
+            note(name .. " icon: " .. tostring(native))
+            return nil
+        end
+        return image, native
+    end
+    if CONFIG.AutoImageFiles then
+        local path = findFile(FOLDER .. "/icons/" .. name)
+        if path then
+            local image, reason = fileToAsset(path)
+            if not image then
+                note(name .. " icon: " .. tostring(reason))
+            end
+            return image, false
+        end
+    end
+    return nil
+end
+
+------------------------------------------------------------------------
+-- small persisted settings (UI scale)
+------------------------------------------------------------------------
+local settingsPath = FOLDER .. "/gui.json"
+local settings = { scale = 1 }
+
+local function loadSettings()
+    if not canFS then
+        return
+    end
+    pcall(function()
+        if isfile(settingsPath) then
+            local decoded = HttpService:JSONDecode(readfile(settingsPath))
+            if type(decoded) == "table" and type(decoded.scale) == "number" then
+                settings.scale = math.clamp(decoded.scale, 0.6, 1.6)
+            end
+        end
+    end)
+end
+
+local function saveSettings()
+    if not canFS then
+        return
+    end
+    pcall(function()
+        writefile(settingsPath, HttpService:JSONEncode(settings))
+    end)
+end
+
+
+------------------------------------------------------------------------
+-- look & feel
+------------------------------------------------------------------------
+local THEME_NAME = "ProjectZero"
+local ACCENT = {
+    Color3.fromRGB(56, 160, 255),
+    Color3.fromRGB(0, 229, 255),
+    Color3.fromRGB(150, 100, 255),
+    Color3.fromRGB(56, 160, 255),
+}
+
+local function accentSequence()
+    return ColorSequence.new({
+        ColorSequenceKeypoint.new(0, ACCENT[1]),
+        ColorSequenceKeypoint.new(0.33, ACCENT[2]),
+        ColorSequenceKeypoint.new(0.66, ACCENT[3]),
+        ColorSequenceKeypoint.new(1, ACCENT[4]),
+    })
+end
+
+-- Copies Redz's built-in "Darker" theme and recolours it (deep navy glass + electric blue).
+local function registerTheme(lib)
+    local base = lib.Themes and lib.Themes.Darker
+    if not base then
+        return false
+    end
+    local function copy(value)
+        local result = {}
+        for k, v in pairs(value) do
+            result[k] = type(v) == "table" and copy(v) or v
+        end
+        return result
+    end
+    local theme = copy(base)
+    theme.Name = THEME_NAME
+    local c = theme.Colors
+    c.Background = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(6, 10, 20)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(12, 20, 39)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(6, 10, 20)),
+    })
+    c.Primary = Color3.fromRGB(56, 160, 255)
+    c.OnPrimary = Color3.fromRGB(22, 70, 128)
+    c.ScrollBar = Color3.fromRGB(40, 120, 200)
+    c.Stroke = Color3.fromRGB(28, 44, 74)
+    c.Icons = Color3.fromRGB(225, 236, 250)
+    c.Link = Color3.fromRGB(90, 190, 255)
+    c.Dialog.Background = Color3.fromRGB(12, 20, 38)
+    c.Buttons.Default = Color3.fromRGB(16, 25, 45)
+    c.Buttons.Holding = Color3.fromRGB(24, 38, 66)
+    c.Border.Default = Color3.fromRGB(30, 46, 78)
+    c.Border.Holding = Color3.fromRGB(58, 98, 160)
+    c.Text.Default = Color3.fromRGB(240, 246, 255)
+    c.Text.Dark = Color3.fromRGB(190, 205, 226)
+    c.Text.Darker = Color3.fromRGB(148, 166, 196)
+    c.Slider.SliderBar = Color3.fromRGB(56, 160, 255)
+    c.Slider.SliderNumber = Color3.fromRGB(235, 245, 255)
+    c.Dropdown.Holder = Color3.fromRGB(12, 20, 38)
+    theme.Font.Bold = Enum.Font.GothamBold
+    theme.Font.ExtraBold = Enum.Font.GothamBlack
+    theme.Font.SliderValue = Enum.Font.GothamBold
+    theme.BackgroundTransparency = 0.04
+    lib.Themes[THEME_NAME] = theme
+    return true
+end
+
+-- Rounded neon outline (slowly turning gradient) + accent line under the title bar.
+local function addChrome(mainFrame, title)
+    if mainFrame then
+        local stroke = Instance.new("UIStroke")
+        stroke.Name = "PZBorder"
+        stroke.Thickness = 1.6
+        stroke.Color = Color3.fromRGB(255, 255, 255)
+        stroke.Transparency = 0.1
+        stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        stroke.Parent = mainFrame
+
+        local gradient = Instance.new("UIGradient")
+        gradient.Color = accentSequence()
+        gradient.Parent = stroke
+
+        if CONFIG.AnimatedBorder then
+            local connection
+            connection = game:GetService("RunService").Heartbeat:Connect(function(dt)
+                gradient.Rotation = (gradient.Rotation + dt * 45) % 360
+            end)
+            mainFrame.Destroying:Connect(function()
+                if connection then
+                    connection:Disconnect()
+                    connection = nil
+                end
+            end)
+        end
+    end
+
+    local bar = title and title.Parent
+    if bar then
+        title.TextSize = 14
+        local line = Instance.new("Frame")
+        line.Name = "PZAccentLine"
+        line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        line.BorderSizePixel = 0
+        line.Position = UDim2.new(0, 10, 1, -1)
+        line.Size = UDim2.new(1, -20, 0, 1)
+        line.Parent = bar
+
+        local gradient = Instance.new("UIGradient")
+        gradient.Color = accentSequence()
+        gradient.Parent = line
+    end
+end
+
+------------------------------------------------------------------------
+-- placeholder layout (every control is inert: no scripts attached yet)
+------------------------------------------------------------------------
+local function T(name, default) return { k = "t", name = name, default = default == true } end
+local function S(name, min, max, default, step) return { k = "s", name = name, min = min, max = max, default = default, step = step or 1 } end
+local function D(name, options, default, multi) return { k = "d", name = name, options = options, default = default, multi = multi == true } end
+local function B(name) return { k = "b", name = name } end
+local function I(name, placeholder) return { k = "i", name = name, placeholder = placeholder } end
+local function L(title, text) return { k = "l", title = title, text = text } end
+
+-- sample choices (the real lists will be filled in by the game later)
+local MATERIALS = { "Leather + Scrap Metal", "Angel Wings", "Magma Ore", "Fish Tail", "Radioactive Material", "Ectoplasm", "Mystic Droplet", "Vampire Fang", "Demonic Wisp", "Conjured Cocoa", "Dragon Scale", "Gunpowder", "Mini Tusk", "Nightmare Catcher" }
+local BOSSES = { "The Gorilla King", "Chief", "Yeti", "Vice Admiral", "Warden", "Chief Warden", "Swan", "Magma Admiral", "Fishman Lord", "Wysper", "Thunder God", "Cyborg", "Saw", "Diamond", "Jeremy", "Orbitus", "Smoke Admiral", "Awakened Ice Admiral", "Tide Keeper", "Don Swan", "Stone", "Kilo Admiral", "Captain Elephant", "Beautiful Pirate", "Cake Queen" }
+local BOATS = { "Dinghy", "PirateSloop", "PirateBrigade", "PirateGrandBrigade", "MarineSloop", "MarineBrigade", "MarineGrandBrigade", "Beast Hunter", "Lantern", "Guardian", "Grand Brigade", "Sloop", "The Sentinel" }
+local ZONES = { "Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "Infinite" }
+local SEA_TARGETS = { "Terror Shark", "Sea Beast", "Shark", "Piranha", "Fish Crew Member", "Pirate Brigade", "Pirate Grand Brigade", "Ghost Ship" }
+local RODS = { "Fishing Rod", "Gold Rod", "Shark Rod", "Shell Rod", "Treasure Rod", "Shark (Corrupted)", "Shell (Celestial)" }
+local BAITS = { "Basic Bait", "Kelp Bait", "Good Bait", "Abyssal Bait", "Frozen Bait", "Epic Bait", "Carnivore Bait" }
+local CARDS = { "Hyper", "Overflow", "Fortress", "Shadow", "Sniper", "Lifesteal", "Unbreakable", "Health", "Defense", "Armor", "Melee", "Sword", "Fruit", "Gun" }
+local RAID_CHIPS = { "Flame", "Ice", "Quake", "Light", "Dark", "Spider", "Rumble", "Magma", "Buddha", "Sand", "Phoenix", "Dough" }
+local FRUITS = { "Rocket-Rocket", "Spin-Spin", "Blade-Blade", "Spring-Spring", "Bomb-Bomb", "Smoke-Smoke", "Spike-Spike", "Flame-Flame", "Ice-Ice", "Sand-Sand", "Dark-Dark", "Eagle-Eagle", "Diamond-Diamond", "Light-Light", "Rubber-Rubber", "Ghost-Ghost", "Magma-Magma", "Quake-Quake", "Buddha-Buddha", "Love-Love", "Creation-Creation", "Spider-Spider", "Sound-Sound", "Phoenix-Phoenix", "Portal-Portal", "Lightning-Lightning", "Pain-Pain", "Blizzard-Blizzard", "Gravity-Gravity", "Mammoth-Mammoth", "T-Rex-T-Rex", "Dough-Dough", "Shadow-Shadow", "Venom-Venom", "Gas-Gas", "Spirit-Spirit", "Tiger-Tiger", "Yeti-Yeti", "Kitsune-Kitsune", "Control-Control", "Dragon-Dragon" }
+local ISLANDS = { "Starter Island", "Jungle", "Pirate Village", "Desert", "Frozen Village", "Marine Fortress", "Skylands", "Prison", "Colosseum", "Magma Village", "Underwater City", "Fountain City" }
+local NPCS = { "Blox Fruit Dealer", "Sword Dealer", "Ability Teacher", "Haki Advisor", "Barista", "Boat Dealer" }
+local MELEES = { "Combat", "Dark Step", "Electric", "Water Kung Fu", "Dragon Breath", "Superhuman", "Death Step", "Sharkman Karate", "Electric Claw", "Dragon Talon", "Godhuman", "Sanguine Art" }
+local GUNS = { "Slingshot", "Musket", "Flintlock", "Refined Slingshot", "Dual Flintlock", "Cannon", "Bizarre Rifle", "Acidum Rifle", "Kabucha", "Skull Guitar", "Bazooka" }
+local ACCESSORIES = { "Black Cape", "Swordsman Hat", "Tomoe Ring", "Pink Coat", "Blue Coat", "Cool Shades" }
+local KEYS5 = { "Z", "X", "C", "V", "F" }
+
+local LAYOUT = {
+    ["Home"] = {
+        { "Main Farm",
+            D("Weapon", { "Melee", "Sword", "Blox Fruit", "Gun" }, "Melee"),
+            D("Farm Method", { "Quest", "Quest + Nearest", "No Quest", "Nearest" }, "Quest"),
+            D("Quest Farm Mode", { "Single Quest", "Double Quest", "Triple Quest" }, "Double Quest"),
+            S("Nearest (Distance)", 1000, 5000, 1500, 50),
+            T("Auto Farm"), T("Take Quest"), T("Auto Bones"), T("Enable Mastery"),
+            S("Health Mob %", 15, 100, 25),
+            T("Auto Random Surprise"), T("Auto Pray"), T("Auto Try Luck"),
+            T("Auto Katakuri"), T("Ignore Katakuri"),
+            T("Auto Dough King"), T("Ignore Farm Dough King Item"),
+            D("Select Material", MATERIALS, MATERIALS[1]),
+            T("Auto Farm Material"),
+        },
+        { "Boss Farm",
+            D("Select Boss", BOSSES, BOSSES[1]),
+            T("Auto Farm Boss"), T("Auto Kill All Bosses"), T("Get Boss Quest"),
+        },
+        { "Tyrant Farm",
+            T("Auto Summon + Kill Tyrant Of The Skies"), T("Use Skull Guitar for Vases", true),
+        },
+        { "Chest Farm",
+            T("Start Farming Chest"), T("Stop If Items"), T("Auto Hop Server On Chests"),
+            S("Chest Hop Target Count", 1, 50, 10),
+            D("Chest Type", { "All", "Silver", "Gold", "Diamond" }, "All"),
+            T("Stop Hop If Chalice / Fist", true),
+        },
+        { "Farm Settings",
+            S("Travel Speed", 10, 250, 250, 5),
+            D("Tween Method", { "Lerp", "TweenService" }, "Lerp"),
+            T("Bypass TP"),
+            S("Farm Distance", 0, 30, 18),
+            S("Bring Radius", 150, 400, 350, 10),
+            D("Pos Method", { "Above", "Orbit" }, "Above"),
+            T("Start Bring", true),
+            D("Attack Method", { "Fast Attack", "Legit Attack" }, "Fast Attack"),
+            S("Fast Attack Delay", 0, 1, 0, 0.01),
+            T("Fast Attack", true), T("Project Zero Attack"), T("Auto Attack Gun", true),
+            D("Dragonstorm Mode", { "Spread Damage", "Single Damage" }, "Spread Damage"),
+            S("Gun Shoot Amount", 1, 10, 1),
+            T("Remove Fast Attack Animation", true),
+            T("Attack Mobs", true), T("Attack Players", true),
+            T("Auto Activate Observation Haki"), T("Auto Set Spawn Point"),
+            T("Debounce Quests"), T("Bypass Get Quest"),
+            D("Select Team", { "Pirates", "Marines" }, "Pirates"),
+            T("Auto Load Script on Load"),
+            T("Disable Damage Counter"), T("Disable Notifications"),
+            T("Walk in Water", true),
+            T("Auto Hop when 30 mins"), T("Auto Hop When Admin Joined", true),
+            T("Anti AFK", true),
+            B("Remove Effects"),
+        },
+        { "Skills",
+            D("Select Skills", { "Blox Fruit", "Melee", "Sword", "Gun" }, nil, true),
+            D("Blox Fruit Skills", KEYS5, nil, true),
+            D("Melee Skills", { "Z", "X", "C" }, nil, true),
+            D("Sword Skills", { "Z", "X" }, nil, true),
+            D("Gun Skills", { "Z", "X" }, nil, true),
+            T("Auto Use Skills"),
+        },
+        { "Skill Timing",
+            S("Z Hold Time (ms)", 0, 5, 0, 0.1), S("X Hold Time (ms)", 0, 5, 0, 0.1), S("C Hold Time (ms)", 0, 5, 0, 0.1),
+            S("V Hold Time (ms)", 0, 5, 0, 0.1), S("F Hold Time (ms)", 0, 5, 0, 0.1),
+            S("Blox Fruit Skill Delay (ms)", 0, 5, 0, 0.1), S("Melee Skill Delay (ms)", 0, 5, 0, 0.1),
+            S("Sword Skill Delay (ms)", 0, 5, 0, 0.1), S("Gun Skill Delay (ms)", 0, 5, 0, 0.1),
+        },
+    },
+
+    ["Sub Farm"] = {
+        { "World Farm", T("Auto Second Sea Quest"), T("Auto Third Sea Quest") },
+        { "Quest Farm",
+            T("Complete Saber Quest"), T("Complete Bartilo Quest"), T("Complete Citizen Quest"), T("Complete Rainbow Haki Quest"),
+        },
+        { "Items Farm",
+            T("Auto Get Yama (Fully)"), T("Auto Get Tushita (Fully)"), T("Auto Get CDK (Fully)"),
+            T("Auto Get Rengoku (Fully)"), T("Auto Get TTK (Fully)"), T("Auto Evolve DarkBlade (V2)"),
+            T("Auto Shark Anchor (Fully)"), T("Auto Get Skull Guitar (Fully)"), T("Ignore Material Farm for Skull Guitar"),
+        },
+        { "Sword Mastery", S("Select Sword Mastery", 100, 600, 600, 10), T("Auto Mastery Swords (Fully)") },
+        { "Fight Style Obtainment",
+            T("Auto Death Step"), T("Auto Sharkman Karate"), T("Auto Electric Claw"), T("Auto Dragon Talon"),
+        },
+        { "Timely Farm",
+            T("Auto Elite Hunter"), T("Auto Factory Raid"), T("Auto Pirate Raid"), T("Auto Soul Reaper"),
+            T("Auto Darkbeard"), T("Auto Greybeard"), T("Auto Cursed Captain"), T("Auto Open Colors Plate"),
+            T("Auto True Form Rip Indra"),
+        },
+        { "Other Farm",
+            T("Start Farm Observation"), T("Auto Get Observation V2"), T("Farm Observation Hopping"), T("Auto Dummy Training"),
+        },
+    },
+
+    ["Sea Event"] = {
+        { "Mirage Event", T("Auto Find Mirage Island"), T("Teleport to Mirage") },
+        { "Kitsune Event",
+            T("Auto Find Kitsune Island"), T("Teleport to Shrine"), T("Auto Collect Azure Embers"),
+            T("Auto Kitsune Farm"), S("Set Azure Ember", 1, 25, 1), T("Auto Trade Azure Ember"),
+        },
+        { "Leviathan Hunt",
+            B("Bribe"), T("Auto Find Leviathan"), T("Ignore Sea Events While Finding"),
+            T("Auto Kill Leviathan"), T("Auto Sail back to Tiki"),
+        },
+        { "Sea Farm",
+            D("Select Boat", BOATS, "PirateBrigade"),
+            D("Select Zone", ZONES, "Level 6"),
+            S("Boat Height", 0, 150, 31), S("Boat Speed", 10, 250, 230, 5),
+            D("Sea Event Targets", SEA_TARGETS, nil, true),
+            D("Select Owned Boat", { "My Boat" }, "My Boat"),
+            B("Refresh Boats"),
+            T("ESP My Boat"), T("Auto Drive"), B("Buy New Boat"),
+            T("Auto Farm Sea Events"), T("Protect Boat (Float in Combat)", true),
+            T("Auto Buy New Boat When It Dies"), T("Auto Reset Character if Boat Destroyed"),
+            T("Auto Dodge Terror Shark", true), T("Auto Dodge Seabeast", true),
+            T("Use M1 Dragonstorm for Seabeast / Ships"),
+            S("Manual Speed", 20, 250, 150, 5), T("Manual Increase Boat Speed"),
+        },
+        { "Fishing",
+            D("Fishing Rod", RODS, RODS[1]), D("Bait", BAITS, BAITS[1]),
+            B("Open Fish Index"),
+            T("Auto Fishing"), T("Auto Catch Chest"), T("Auto Craft Bait"),
+            T("Auto Get / Complete Angler Quest"), T("Auto Sell Fish"), T("Auto Use Rod Skill"),
+        },
+        { "Fish Slap Minigame", T("Auto Fish Slap") },
+    },
+
+    ["Player"] = {
+        { "Player Stats",
+            L("Player Status", "Scanning for information..."),
+            S("Select Points", 0, 1000, 10, 5),
+            T("Melee"), T("Defense"), T("Sword"), T("Gun"), T("Devil Fruit"),
+            T("Start Adding Stats"),
+        },
+        { "ESP Menu",
+            T("Players ESP"), T("Islands ESP"), T("Fruits ESP"), T("Chests ESP"), T("Berries ESP"),
+            T("Natural Fruits ESP (Pineapple, etc.)"),
+        },
+        { "PVP Menu",
+            D("Select Player", { "Nearest" }, "Nearest"),
+            B("Refresh Player List"),
+            T("Cam Lock"), T("Spectate Player"), T("Teleport to Player"), T("Enable Aimbot"),
+            B("Get Player Quest"),
+        },
+        { "Server Menu",
+            L("Server Status", "Loading..."), B("Refresh Server Info"),
+            L("Player Status", "Loading..."), B("Refresh Player Info"),
+            L("Fruit Stock", "Loading fruit stock..."), B("Refresh Fruit Stock"),
+        },
+    },
+
+    ["Dragon Update"] = {
+        { "Berry Farm", T("Auto Collect Berries"), T("Hop If No Berries") },
+        { "Belt Obtainment", B("Teleport to Dojo Trainer"), T("Auto White Belt"), T("Auto Purple Belt") },
+        { "Prehistoric Event",
+            T("Auto Find Prehistoric Island"), T("Teleport to Prehistoric Island"),
+            T("Auto Complete Volcanic Event"), T("Use Skull Guitar for Volcano", true),
+            T("Auto Collect Bones"), T("Auto Collect Dragon Eggs"), T("Auto Farm Blaze Ember"),
+            D("Select Gun", { "Skull Guitar", "Bazooka" }, "Skull Guitar"),
+            T("Use Shoot Gun for Tree Quest"),
+            B("Teleport to Dragon Hunter"), B("Teleport to Dragon Wizard"),
+            T("Auto Upgrade Dragon Talon"),
+            B("Craft Volcanic Magnet"), B("Craft Dragonheart"), B("Craft Dragonstorm"),
+            B("Craft Dino Hood"), B("Craft T-Rex Skull"),
+        },
+        { "Draco Race",
+            T("Teleport to Draco Trial"), B("Change to Draco Race"),
+            T("Auto Draco Race V2"), T("Auto Complete Draco Trial"),
+        },
+    },
+
+    ["Dungeon"] = {
+        { "Raid Menu",
+            D("Raid Chip", RAID_CHIPS, RAID_CHIPS[1]),
+            T("Auto Buy Chip"), T("Auto Complete Raid"), T("Instant Kill Islands 4-5"),
+            T("Auto Unstore Below 1m Fruit"), T("Auto Awaken"),
+            S("Frags Cap", 1000, 1000000, 1000, 1000),
+            T("Auto Stop Raid When Fragments Reach Cap"),
+        },
+        { "Dungeon Menu",
+            T("Auto Unlock Difficulties"), T("Auto Complete Dungeon"), T("Auto Destroy Shrines and Vents"),
+            D("Select Cards", CARDS, nil, true), T("Auto Select Cards"),
+            B("Unlock Next Difficulty"), B("Teleport to Dungeon Map"), B("Return to Previous Sea"),
+        },
+        { "Law Menu", T("Start Law Raid Farm") },
+        { "Fruit Menu",
+            B("Open Normal Shop"), B("Open Advanced Shop"),
+            T("Auto Roll Fruit"), T("Auto Store Fruit"),
+            L("Fruit Spawn Status", "Scanning for fruit..."),
+            T("Teleport to Fruit"), T("Hop If No Fruit In Server"), T("Fruit Notification"),
+            B("Teleport to Advanced Fruit Dealer"),
+        },
+        { "Trinkets & Refiner",
+            B("Buy Trinket"), T("Auto Buy Trinkets"),
+            B("Fuse / Merge 3 Trinkets"), T("Auto Fuse / Merge Trinkets"),
+            B("Reforge / Refine Trinket"), T("Auto Refine Trinket"),
+            B("Open Trinket Merge GUI"), B("Open Trinket Refiner GUI"), B("Open Trinket Scrap GUI"),
+            T("Auto Scrap Junk Trinkets"),
+        },
+    },
+
+    ["Trials"] = {
+        { "Trials",
+            B("Go to Race Door"), T("Auto Activate Race"), T("Auto Complete Trials"),
+            T("Kill Players After Trial"), B("Reset Character"), T("Auto Choose Gear"),
+            D("Train Method", { "Bones", "Cakes" }, "Bones"),
+            T("Start Auto Train"), T("Auto Pull Lever (Fully)"), T("Teleport To Blue Gear"),
+        },
+        { "Area",
+            B("Teleport to Top of Great Tree"), B("Teleport to Temple of Time"), B("Teleport to Ancient One"),
+            B("Teleport to Lever Pull"), B("Teleport to Safe Zone"), B("Teleport back to PvP Zone"), B("Teleport to Clock"),
+        },
+        { "Misc Trial",
+            T("Auto Upgrade Gear"), T("Auto Activate V3", false), T("Auto Activate V4"), T("Auto Look Moon"),
+        },
+        { "Upgrades", T("Auto Race Evolve V2"), T("Auto Race Evolve V3") },
+        { "Race Obtainment", T("Auto Get Ghoul Race (Fully)"), T("Auto Get Cyborg Race (Fully)") },
+    },
+
+    ["Travel"] = {
+        { "World Travel", B("Teleport to World 1"), B("Teleport to World 2"), B("Teleport to World 3") },
+        { "Island Travel", D("Select Island", ISLANDS, ISLANDS[1]), T("Start Traveling") },
+        { "NPC Travel", D("Select NPC", NPCS, NPCS[1]), T("Start Traveling") },
+        { "Server Travel",
+            I("Job ID", "Paste a Job ID"), I("Project Zero Premium Code", "Paste a code"), B("Copy Current Job ID"),
+        },
+        { "Quick Travel", B("Rejoin Server"), B("Server Hop (Random Server)") },
+        { "Server Joiner",
+            B("Join Full Moon Server"), B("Join Near Full Moon Server"), B("Join Mirage Island Server"),
+            B("Join Elite Hunter Server"), B("Join Kitsune Island Server"), B("Join Prehistoric Island Server"),
+            B("Join Factory Raid Server"), B("Join 4 Hours Server"), B("Join Castle Raid Server"),
+            D("Select Legendary Sword", { "Shizu", "Oroshi", "Saishi" }, "Shizu"),
+            B("Join Legendary Sword Server"), B("Join Fruit Server"),
+            D("Select Boss to Hop", BOSSES, BOSSES[1]), B("Join Raid Boss Server"),
+        },
+        { "AFK Joiner",
+            S("Hop Delay (s)", 1, 60, 10),
+            T("Auto AFK Join Castle Raid"), T("Auto AFK Join Factory Raid"), T("Auto AFK Join Boss Raid"),
+            T("Auto AFK Join Elite Hunter"), T("Auto AFK Join Fruit"),
+            T("Stop Hop If Chalice / Fist", true),
+        },
+    },
+
+    ["Shop"] = {
+        { "Selection Shop",
+            D("Select Melee", MELEES, MELEES[1]), T("Auto Buy Melee"),
+            D("Abilities", { "Geppo", "Buso Haki", "Soru", "Ken Haki" }, "Geppo"), B("Buy Ability"),
+            D("Guns", GUNS, GUNS[1]), B("Buy Gun"),
+            D("Accessories", ACCESSORIES, ACCESSORIES[1]), B("Buy Accessory"),
+        },
+        { "Item Shop", T("Buy Haki Color"), T("Buy Legendary Sword"), T("Buy True Triple Katana") },
+        { "Fruit Dealer",
+            D("Select Fruit to Buy", FRUITS, "Buddha-Buddha"),
+            T("Auto Buy Fruit (Normal Dealer)"), B("Buy Selected Fruit"),
+        },
+        { "Race Shop", B("Cyborg Race"), B("Ghoul Race") },
+        { "Fragment Shop", B("Reroll Race"), B("Reset Player Stats") },
+        { "Scroll Crafting",
+            D("Select Scroll", { "Common Scroll", "Rare Scroll", "Legendary Scroll", "Mythical Scroll" }, "Common Scroll"),
+            S("Craft Amount", 1, 10, 1), B("Craft Selected Scroll"), T("Auto Craft Selected Scroll"),
+        },
+    },
+
+    ["Misc"] = {
+        { "Team Selection", B("Join Marines Team"), B("Join Pirates Team") },
+        { "Menu Openings", B("Open Title Names"), B("Open Awakenings") },
+        { "Fake Admin Panel",
+            B("Teleport Tool"), B("Summon Heaven Dimension"), B("Summon Red Legion Hideout"),
+            B("Summon Rip Family Arena"), B("Summon Pocket Dimension"), B("Summon Rip Family Hideout"),
+            B("Give Triple DarkBlade"), B("Give Celestial Art"), B("Give Divine Art"), B("Give Tensei"),
+            B("Give All Kamui Tools"), B("Rain Fruit"), B("Give Black Blast"), B("Give Black Nuke"), B("Give Rogue Fruit"),
+        },
+        { "Player Client",
+            T("Remove Observation Effect"),
+            S("Walk Speed", 50, 500, 50, 5), S("Jump Power", 50, 500, 50, 5),
+            T("X-ray Vision"), T("Infinite Zoom"), T("White Screen"), T("Black Screen"),
+            B("Redeem All Codes"), T("Remove Fog"),
+            B("Force FPS Boost"), B("Developer Console"), B("Clean Memory / Free RAM"),
+            T("Auto Memory Cleaner (60s)", true), T("Auto Turn On Fast Mode"),
+        },
+    },
+
+    ["Webhook"] = {
+        { "General Webhook",
+            I("Main Webhook URL", "https://discord.com/api/webhooks/..."),
+            T("Enable Send Webhook"), B("Send Test Webhook"),
+        },
+        { "World & Fruit Events",
+            T("Send Webhook: Prehistoric"), T("Send Webhook: Kitsune"), T("Send Webhook: Mirage"),
+            T("Send Webhook: Rolled Fruit"), T("Send Webhook: Stored Fruit"),
+        },
+        { "Data Log & Farm Tracker",
+            T("Enable Data Log Webhook"), I("Data Log Webhook URL (optional)", "https://discord.com/api/webhooks/..."),
+            S("Data Log Interval (minutes)", 1, 60, 5),
+            T("Send on Level Up"), T("Include Inventory in Data Log", true), T("Include Farms Summary", true),
+            B("Send Data Log Now"),
+        },
+        { "Ping Settings",
+            I("Discord User ID (for ping)", "123456789012345678"),
+            T("Ping on Mirage / Kitsune"), T("Ping on Mythical Fruit"),
+        },
+    },
+
+    ["Settings"] = {
+        { "Appearance",
+            T("Farm HUD"), T("Startup Animation", true),
+            D("Logo Style", { "Default", "Project Zero" }, "Project Zero"),
+        },
+    },
+}
+
+------------------------------------------------------------------------
+-- 1. clean up an earlier run, load the embedded Redz library
+------------------------------------------------------------------------
 pcall(function()
     if env.ProjectZeroRedzLib then
         env.ProjectZeroRedzLib:Destroy()
@@ -4063,7 +4764,6 @@ pcall(function()
 end)
 env.ProjectZeroRedzLib, env.ProjectZeroWindow, env.ProjectZeroTabs = nil, nil, nil
 
--- 2. Load the embedded Redz library.
 if type(loadstring) ~= "function" then
     log("This executor has no loadstring, so the GUI cannot load.")
     return
@@ -4082,24 +4782,27 @@ if not okLib or type(Library) ~= "table" or type(Library.MakeWindow) ~= "functio
 end
 env.ProjectZeroRedzLib = Library
 
--- 3. Create the window (settings folder only if the executor can make one).
-local scriptFolder = nil
-if type(isfolder) == "function" and type(makefolder) == "function" then
-    local okFolder = pcall(function()
-        if not isfolder("ProjectZero") then
-            makefolder("ProjectZero")
-        end
-    end)
-    if okFolder then
-        scriptFolder = "ProjectZero"
+local themeReady = false
+do
+    local okTheme, errTheme = pcall(registerTheme, Library)
+    themeReady = okTheme and errTheme == true
+    if not okTheme then
+        log("Custom theme could not be built (using the default one): " .. tostring(errTheme))
     end
 end
 
+ensureFolder(FOLDER)
+ensureFolder(FOLDER .. "/icons")
+loadSettings()
+
+------------------------------------------------------------------------
+-- 2. window
+------------------------------------------------------------------------
 local okWindow, Window = pcall(function()
     return Library:MakeWindow({
-        Title = "Project Zero",
-        SubTitle = "Blox Fruit",
-        ScriptFolder = scriptFolder,
+        Title = CONFIG.Title,
+        SubTitle = CONFIG.SubTitle,
+        ScriptFolder = canFolders and FOLDER or nil,
     })
 end)
 if not okWindow or not Window then
@@ -4108,25 +4811,328 @@ if not okWindow or not Window then
 end
 env.ProjectZeroWindow = Window
 
--- 4. Create the tabs (empty for now). One bad tab does not stop the rest.
+if themeReady then
+    local okSet, errSet = pcall(function()
+        Library:SetTheme(THEME_NAME)
+    end)
+    if not okSet then
+        log("Could not apply the Project Zero theme: " .. tostring(errSet))
+    end
+end
+
+local elements = {}
+pcall(function()
+    elements = Window:GetElements()
+end)
+local mainFrame = elements.MainFrame
+local tabsContainer = elements.TabsContainer
+local resizeHandle = mainFrame and mainFrame:FindFirstChild("ControlWindowSize")
+
+do
+    local okChrome, errChrome = pcall(addChrome, mainFrame, Window.TITLE_LABEL)
+    if not okChrome then
+        log("Window styling could not be applied: " .. tostring(errChrome))
+    end
+end
+
+------------------------------------------------------------------------
+-- 3. visible resize grip (Redz already has a drag handle, but it is invisible)
+------------------------------------------------------------------------
+local function addGrip(handle)
+    local grip = Instance.new("Frame")
+    grip.Name = "PZGrip"
+    grip.BackgroundTransparency = 1
+    grip.AnchorPoint = Vector2.new(1, 1)
+    grip.Size = UDim2.fromOffset(16, 16)
+    grip.Position = UDim2.new(0.8, -3, 0.8, -3)
+    grip.Active = false
+    grip.Parent = handle
+
+    -- three diagonal bars, longest furthest from the corner
+    for _, bar in ipairs({ { 13.5, 4 }, { 10.5, 8 }, { 7.5, 12 } }) do
+        local line = Instance.new("Frame")
+        line.Name = "Bar"
+        line.BackgroundColor3 = Color3.fromRGB(235, 235, 245)
+        line.BackgroundTransparency = 0.25
+        line.BorderSizePixel = 0
+        line.AnchorPoint = Vector2.new(0.5, 0.5)
+        line.Position = UDim2.fromOffset(bar[1], bar[1])
+        line.Size = UDim2.fromOffset(bar[2], 2)
+        line.Rotation = -45
+        line.Parent = grip
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(1, 0)
+        corner.Parent = line
+    end
+end
+
+if resizeHandle then
+    local ok, err = pcall(addGrip, resizeHandle)
+    if not ok then
+        log("Resize grip could not be drawn: " .. tostring(err))
+    end
+else
+    log("Resize handle not found; use the Settings > Window sliders instead.")
+end
+
+local function setWindowSize(width, height)
+    if not resizeHandle then
+        return
+    end
+    -- Redz resizes the window when this handle moves (and saves the size).
+    resizeHandle.Position = UDim2.fromOffset(width, height)
+end
+
+------------------------------------------------------------------------
+-- 4. logo (title bar + optional floating button)
+------------------------------------------------------------------------
+local logoImage = resolveLogo()
+
+if logoImage then
+    local ok, err = pcall(function()
+        local title = Window.TITLE_LABEL
+        local bar = title and title.Parent
+        if not bar then
+            error("title bar not found")
+        end
+        local logo = Instance.new("ImageLabel")
+        logo.Name = "PZLogo"
+        logo.BackgroundTransparency = 1
+        logo.AnchorPoint = Vector2.new(0, 0.5)
+        logo.Position = UDim2.new(0, 10, 0.5, 0)
+        logo.Size = UDim2.fromOffset(22, 22)
+        logo.ScaleType = Enum.ScaleType.Fit
+        logo.Image = logoImage
+        logo.Parent = bar
+        title.Position = UDim2.new(0, 38, 0.5, 0)
+    end)
+    if not ok then
+        log("Logo could not be added to the title bar: " .. tostring(err))
+    end
+
+    if CONFIG.FloatingButton then
+        local okButton, errButton = pcall(function()
+            Window:CreateMobileMinimizer({ Image = logoImage, Corner = UDim.new(0.2, 0) })
+        end)
+        if not okButton then
+            log("Floating logo button could not be created: " .. tostring(errButton))
+        end
+    end
+end
+
+------------------------------------------------------------------------
+-- 5. tabs (+ icons)
+------------------------------------------------------------------------
+-- Redz only draws icons that are Roblox asset ids. For file / link images we add our own
+-- image next to the tab name instead.
+local function addFileIcon(tabName, image)
+    if not tabsContainer then
+        error("tab list not found")
+    end
+    for _, d in ipairs(tabsContainer:GetDescendants()) do
+        if d:IsA("TextLabel") and d.Text == tabName and d.Parent then
+            local icon = Instance.new("ImageLabel")
+            icon.Name = "PZIcon"
+            icon.BackgroundTransparency = 1
+            icon.AnchorPoint = Vector2.new(0, 0.5)
+            icon.Position = UDim2.new(0, 8, 0.5, 0)
+            icon.Size = UDim2.fromOffset(16, 16)
+            icon.ScaleType = Enum.ScaleType.Fit
+            icon.Image = image
+            icon.Parent = d.Parent
+            d.Size = UDim2.new(1, -32, 1, 0)
+            d.Position = UDim2.new(0, 30, 0, 0)
+            return
+        end
+    end
+    error("tab button not found")
+end
+
 local tabs, created = {}, 0
 for _, name in ipairs(TABS) do
+    local image, native = resolveTabIcon(name)
     local okTab, tab = pcall(function()
-        return Window:MakeTab({ Name = name })
+        return Window:MakeTab({ Name = name, Icon = (image and native) and image or nil })
     end)
     if okTab and tab then
         tabs[name] = tab
         created = created + 1
+        if image and not native then
+            local okIcon, errIcon = pcall(addFileIcon, name, image)
+            if not okIcon then
+                note(name .. " icon: " .. tostring(errIcon))
+            end
+        end
     else
         log("Tab '" .. name .. "' failed: " .. tostring(tab))
     end
 end
 env.ProjectZeroTabs = tabs
 
+
+------------------------------------------------------------------------
+-- 5b. placeholder controls (no functions attached)
+------------------------------------------------------------------------
+local function inert() end
+local placeholderCount, placeholderFailed = 0, {}
+
+local function addItem(tab, item)
+    local ok, err = pcall(function()
+        if item.k == "t" then
+            tab:AddToggle({ Name = item.name, Default = item.default, Callback = inert })
+        elseif item.k == "s" then
+            tab:AddSlider({
+                Name = item.name,
+                Min = item.min,
+                Max = item.max,
+                Increment = item.step,
+                Default = math.clamp(item.default, item.min, item.max),
+                Callback = inert,
+            })
+        elseif item.k == "d" then
+            local cfg = { Name = item.name, Options = item.options, Callback = inert }
+            if item.multi then
+                cfg.MultiSelect = true
+            elseif item.default ~= nil then
+                cfg.Default = item.default
+            end
+            tab:AddDropdown(cfg)
+        elseif item.k == "b" then
+            tab:AddButton({ Name = item.name, Callback = inert })
+        elseif item.k == "i" then
+            tab:AddTextBox({ Name = item.name, Placeholder = item.placeholder, Callback = inert })
+        elseif item.k == "l" then
+            tab:AddParagraph(item.title, item.text)
+        end
+    end)
+    if ok then
+        placeholderCount = placeholderCount + 1
+    else
+        placeholderFailed[#placeholderFailed + 1] = tostring(item.name or item.title) .. " (" .. tostring(err) .. ")"
+    end
+end
+
+local function buildSections(tab, sections)
+    for _, section in ipairs(sections or {}) do
+        pcall(function()
+            tab:AddSection(section[1])
+        end)
+        for i = 2, #section do
+            addItem(tab, section[i])
+        end
+    end
+end
+
+for _, name in ipairs(TABS) do
+    local tab = tabs[name]
+    if tab then
+        if name == "Home" then
+            pcall(function()
+                tab:AddParagraph(
+                    "Project Zero",
+                    "Preview build. Every control in this window is a placeholder and does nothing yet."
+                )
+            end)
+        end
+        if name ~= "Settings" then -- Settings gets its own section below
+            buildSections(tab, LAYOUT[name])
+            task.wait() -- keep the game responsive while ~300 controls are created
+        end
+    end
+end
+
+------------------------------------------------------------------------
+-- 6. Settings tab: window size + image help
+------------------------------------------------------------------------
+local settingsTab = tabs["Settings"]
+if settingsTab then
+    local ok, err = pcall(function()
+        settingsTab:AddSection("Window")
+
+        local widthSlider, heightSlider, scaleSlider
+        local startW = (mainFrame and mainFrame.Size.X.Offset) or DEFAULT_WIDTH
+        local startH = (mainFrame and mainFrame.Size.Y.Offset) or DEFAULT_HEIGHT
+
+        widthSlider = settingsTab:AddSlider({
+            Name = "Window width",
+            Min = 430,
+            Max = 1000,
+            Increment = 10,
+            Default = math.clamp(startW, 430, 1000),
+            Callback = function(v)
+                local h = (mainFrame and mainFrame.Size.Y.Offset) or DEFAULT_HEIGHT
+                setWindowSize(v, h)
+            end,
+        })
+        heightSlider = settingsTab:AddSlider({
+            Name = "Window height",
+            Min = 200,
+            Max = 500,
+            Increment = 10,
+            Default = math.clamp(startH, 200, 500),
+            Callback = function(v)
+                local w = (mainFrame and mainFrame.Size.X.Offset) or DEFAULT_WIDTH
+                setWindowSize(w, v)
+            end,
+        })
+        scaleSlider = settingsTab:AddSlider({
+            Name = "UI scale (%)",
+            Min = 60,
+            Max = 160,
+            Increment = 5,
+            Default = math.floor(settings.scale * 100 + 0.5),
+            Callback = function(v)
+                local newScale = v / 100
+                local changed = math.abs(newScale - settings.scale) > 0.0001
+                settings.scale = newScale
+                pcall(function()
+                    Window:SetUIScale(settings.scale)
+                end)
+                if changed then
+                    saveSettings()
+                end
+            end,
+        })
+        settingsTab:AddButton({
+            Name = "Reset window size and scale",
+            Callback = function()
+                setWindowSize(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+                pcall(function() widthSlider:SetValue(DEFAULT_WIDTH) end)
+                pcall(function() heightSlider:SetValue(DEFAULT_HEIGHT) end)
+                pcall(function() scaleSlider:SetValue(100) end)
+            end,
+        })
+
+        buildSections(settingsTab, LAYOUT["Settings"])
+
+        settingsTab:AddSection("Images")
+        settingsTab:AddParagraph(
+            "Logo and tab icons",
+            "Put logo.png in workspace/ProjectZero and tab icons in workspace/ProjectZero/icons "
+                .. "(named like the tab, e.g. Home.png), then run the script again. "
+                .. "You can also paste a Roblox asset id or a direct image link into the CONFIG at the top of the script."
+        )
+        if #imageNotes > 0 then
+            settingsTab:AddParagraph("Image problems", table.concat(imageNotes, "\n"))
+        end
+    end)
+    if not ok then
+        log("Settings tab could not be built: " .. tostring(err))
+    end
+end
+
+for _, line in ipairs(imageNotes) do
+    log(line)
+end
+for _, line in ipairs(placeholderFailed) do
+    log("Placeholder failed: " .. line)
+end
+
 pcall(function()
     Window:Notify({
-        Title = "Project Zero",
-        Content = "GUI loaded: " .. created .. " of " .. #TABS .. " tabs.",
+        Title = CONFIG.Title,
+        Content = "GUI loaded: " .. created .. " of " .. #TABS .. " tabs, " .. placeholderCount .. " placeholders.",
         Duration = 5,
     })
 end)
