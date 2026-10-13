@@ -24,7 +24,8 @@ local CONFIG = {
     SubTitle = "Blox Fruit",
     Folder = "ProjectZero", -- executor workspace folder for settings and images
 
-    Logo = "",              -- title-bar logo (also used on the floating button)
+    Logo = "https://raw.githubusercontent.com/lguy8068-lang/Redz-Hub-Reimagined/main/Project%20Zero_%20Neon%20Crown%20Emblem.png",
+                            -- title-bar logo (also used on the floating button)
     FloatingButton = true,  -- small draggable logo button that shows / hides the window
     AnimatedBorder = true,  -- slowly turning neon outline around the window
     AutoImageFiles = true,  -- also look for ProjectZero/logo.png and ProjectZero/icons/<Tab>.png
